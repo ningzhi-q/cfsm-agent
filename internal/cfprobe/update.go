@@ -68,11 +68,16 @@ func (a *Agent) autoUpdateWorker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.checkAndScheduleAgentUpdate("periodic")
+		case <-a.autoUpdateWake:
+			a.checkAndScheduleAgentUpdate("enabled")
 		}
 	}
 }
 
 func (a *Agent) checkAndScheduleAgentUpdate(reason string) {
+	if !a.configSnapshot().AutoUpdate {
+		return
+	}
 	if runtime.GOOS == "darwin" {
 		if ok, ver := darwinUpdateSupported(); !ok {
 			a.log.info("auto update skipped: current builds require macOS 13 Ventura or later reason=%s version=%s macos=%s", reason, a.version, ver)
@@ -147,7 +152,15 @@ func checkLatestUpdate(ctx context.Context, currentVersion string, usePublicDNS 
 		return updateCandidate{}, false, err
 	}
 
+	return selectAgentUpdate(releases, currentVersion, assetName)
+}
+
+func selectAgentUpdate(releases []githubRelease, currentVersion, assetName string) (updateCandidate, bool, error) {
 	if strings.HasPrefix(currentVersion, snapshotVersionPrefix) {
+		// Snapshot installations migrate to the verified stable release channel.
+		if candidate, ok := selectLatestStableRelease(releases, assetName, updateVersion{}); ok {
+			return candidate, true, nil
+		}
 		candidate, ok := selectLatestSnapshotRelease(releases, assetName)
 		if !ok || candidate.TagName == currentVersion {
 			return updateCandidate{}, false, nil
@@ -306,6 +319,9 @@ func updateAssetNameForARM(goos, goarch, goarm string) string {
 func (a *Agent) scheduleAgentUpdate(candidate updateCandidate, reason string, cfg Config) {
 	a.updateMu.Lock()
 	defer a.updateMu.Unlock()
+	if !a.configSnapshot().AutoUpdate {
+		return
+	}
 
 	lockFile := filepath.Join(a.paths.ConfigDir, "auto_update.lock")
 	now := time.Now().Unix()

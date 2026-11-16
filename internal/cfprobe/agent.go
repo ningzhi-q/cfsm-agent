@@ -64,6 +64,7 @@ type Agent struct {
 	// 自动发现拿到但没能写入配置文件的 id，后续上报会重试落盘。
 	pendingPersistID string
 	updateMu         sync.Mutex
+	autoUpdateWake   chan struct{}
 	// configWriteMu 串行化配置文件写入：动态配置下发与 UA 下发是两条独立通道，
 	// 并发写会把对方的字段覆盖回旧值。
 	configWriteMu sync.Mutex
@@ -235,13 +236,14 @@ func Run(instance, configFile string, debug bool, version string) error {
 	defer stop()
 
 	a := &Agent{
-		cfg:          cfg,
-		paths:        paths,
-		log:          newLogger(debug),
-		version:      version,
-		ctx:          ctx,
-		wake:         make(chan struct{}, 1),
-		remoteConfig: make(chan remoteConfigRequest, 4),
+		cfg:            cfg,
+		paths:          paths,
+		log:            newLogger(debug),
+		version:        version,
+		ctx:            ctx,
+		wake:           make(chan struct{}, 1),
+		remoteConfig:   make(chan remoteConfigRequest, 4),
+		autoUpdateWake: make(chan struct{}, 1),
 	}
 	a.resetNetworkBaseline(cfg.Interface)
 	a.reporter = newReportTransport(a)
@@ -259,11 +261,7 @@ func Run(instance, configFile string, debug bool, version string) error {
 	} else if cfg.ServerID != "" {
 		a.log.info("WSS disabled connection_mode=http")
 	}
-	if cfg.AutoUpdate {
-		go a.autoUpdateWorker(ctx)
-	} else {
-		a.log.debugf("auto update disabled: local AUTO_UPDATE=0")
-	}
+	go a.autoUpdateWorker(ctx)
 	err = a.loop(ctx)
 	if errors.Is(err, ErrAutoDiscoveryFailed) && serviceSystem(paths) == "procd" {
 		// procd 的 respawn 不区分退出码，先删除运行实例，避免自动发现失败后被重新拉起。
@@ -426,8 +424,15 @@ func (a *Agent) requestContext() context.Context {
 
 func (a *Agent) setConfig(cfg Config) {
 	a.cfgMu.Lock()
+	enabled := !a.cfg.AutoUpdate && cfg.AutoUpdate
 	a.cfg = cfg
 	a.cfgMu.Unlock()
+	if enabled && a.autoUpdateWake != nil {
+		select {
+		case a.autoUpdateWake <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // reportPauseRemaining 返回距离恢复上报的剩余时间，<=0 表示未暂停。
@@ -1346,6 +1351,14 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 			return nil
 		}
 		if values.Has("update") {
+			a.configWriteMu.Lock()
+			defer a.configWriteMu.Unlock()
+			next := a.configSnapshot()
+			next.AutoUpdate = update == "1"
+			if err := writeConfig(a.paths.ConfigFile, next); err != nil {
+				return err
+			}
+			a.setConfig(next)
 			return nil
 		}
 		return errors.New("no config fields")
@@ -1405,8 +1418,12 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 	} else {
 		shouldApply = remoteConfigDiffers(cfg, values, effectiveCollect, report, reset, iface, connectionMode, pingMode)
 	}
+	shouldApply = shouldApply || (values.Has("update") && cfg.AutoUpdate != (update == "1"))
 	if shouldApply {
 		nextCfg := cfg
+		if values.Has("update") {
+			nextCfg.AutoUpdate = update == "1"
+		}
 		nextCfg.CollectInterval = effectiveCollect
 		nextCfg.ReportInterval = report
 		nextCfg.ResetDay = reset

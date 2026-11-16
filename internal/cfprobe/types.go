@@ -49,8 +49,7 @@ type Config struct {
 	UA          string
 	AutoUpdate  bool
 	UpdateProxy string
-	// ConfigMD5 mirrors the worker dynamic config version; local fields like
-	// AutoUpdate and UpdateProxy are intentionally outside that comparison.
+	// ConfigMD5 mirrors the worker dynamic config version; UpdateProxy remains local; AutoUpdate can also be controlled remotely.
 	ConfigMD5 string
 }
 

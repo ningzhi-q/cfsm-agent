@@ -125,7 +125,7 @@ curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.
 
 每个实例都会作为独立服务器上报，必须使用不同的 `SERVER_ID`；使用自动发现时请为每个实例传不同的 `-name`，否则同名建号会失败。除 `-interface` 指定的网卡流量外，CPU、内存、磁盘等系统指标会被各实例分别上报一份。
 
-自动更新默认关闭。安装时传入 `-auto_update=1` 后，Agent 启动时会检查 GitHub release，之后每 6 小时检查一次；稳定版按版本号更新，`Snapshot-` 版本会跟随最新可用 Snapshot prerelease。自动更新只由本地 `AUTO_UPDATE` 配置控制，不依赖面板返回 `update=1`。如果安装时配置了 `--install-ghproxy`，代理会写入本地配置并用于后续自动更新；该本地字段不参与远端配置 MD5 对比。自动更新的检查结果、调度结果和失败原因始终以 info 级日志输出，无需开启 debug；系统级 nohup 环境下安装过程的输出会追加到 `/var/log/cf-probe.log`，systemd 环境可通过 `journalctl -u 'cf-probe-auto-update-*'` 查看。
+自动更新默认开启，仍可传入 `-auto_update=0` 关闭。启动时检查 GitHub 正式 release，之后每 6 小时检查一次；Snapshot 安装发现可用正式版本后迁移到正式通道。v1.2.0 起面板的 `update=0/1` 配置会持久化到本地，并在运行中生效，开启时立即检查、关闭后停止检查。安装代理保持本地设置，下载继续校验 SHA-256。检查、调度和失败原因使用 info 日志，无需开启 debug。
 
 自动更新要求目标 release 提供 `checksums.txt`，且其中包含对应资产的 SHA-256；校验文件不可用、校验不符、下载为空或超出 512 MiB 时会停止本次更新，继续运行当前版本。Linux ARM32 按当前二进制构建时的 `GOARM` 选择 `armv5`、`armv6` 或 `armv7` 资产；无法确定兼容级别时跳过自动更新。ARMv6/v7 的软浮点构建也会跳过自动更新，避免替换为需要硬件浮点的发布资产。
 
