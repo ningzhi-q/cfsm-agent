@@ -339,6 +339,10 @@ func (a *Agent) scheduleAgentUpdate(candidate updateCandidate, reason string, cf
 		return
 	}
 
+	if !a.configSnapshot().AutoUpdate {
+		_ = os.Remove(binPath)
+		return
+	}
 	method, err := scheduleUpdateInstall(a.paths, binPath, now)
 	if err != nil {
 		_ = os.Remove(binPath)
