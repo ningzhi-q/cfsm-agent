@@ -151,7 +151,7 @@ func dialReportWebSocket(ctx context.Context, rawURL string, headers http.Header
 		return nil, nil, started, received, err
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRemoteConfigBytes+1))
 		_ = resp.Body.Close()
 		_ = conn.Close()
 		return nil, resp.Header, started, received, &wsHandshakeError{StatusCode: resp.StatusCode, Headers: resp.Header.Clone(), Body: string(body)}

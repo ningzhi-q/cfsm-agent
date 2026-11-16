@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -163,6 +164,17 @@ func readConfig(path string) (Config, error) {
 	cfg.Node2 = values["NODE_2"]
 	cfg.Node3 = values["NODE_3"]
 	cfg.Node4 = values["NODE_4"]
+	cfg.ProbeCatalog, err = url.QueryUnescape(values["PROBE_CATALOG"])
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ProbeSelection, err = url.QueryUnescape(values["PROBE_SELECTION"])
+	if err != nil {
+		return cfg, err
+	}
+	if _, _, err := parseDynamicProbes(cfg.ProbeCatalog, cfg.ProbeSelection); err != nil {
+		return cfg, err
+	}
 	cfg.Interface, _ = normalizeInterfaceList(values["INTERFACE"])
 	cfg.ResetDay = parseIntDefault(values["RESET_DAY"], cfg.ResetDay)
 	cfg.ConnectionMode, _ = normalizeConnectionMode(values["CONNECTION_MODE"])
@@ -201,6 +213,8 @@ func writeConfig(path string, cfg Config) error {
 	writeKV("NODE_2", cfg.Node2)
 	writeKV("NODE_3", cfg.Node3)
 	writeKV("NODE_4", cfg.Node4)
+	writeKV("PROBE_CATALOG", url.QueryEscape(cfg.ProbeCatalog))
+	writeKV("PROBE_SELECTION", url.QueryEscape(cfg.ProbeSelection))
 	writeKV("INTERFACE", cfg.Interface)
 	writeKV("RESET_DAY", strconv.Itoa(cfg.ResetDay))
 	writeKV("CONNECTION_MODE", cfg.ConnectionMode)

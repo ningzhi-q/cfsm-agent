@@ -259,7 +259,7 @@ func parseNvidiaFloat(raw string) any {
 }
 
 func metricsToMap(m Metrics) map[string]any {
-	return map[string]any{
+	result := map[string]any{
 		"cpu":            m.CPU,
 		"ram_total":      m.RAMTotal,
 		"ram_used":       m.RAMUsed,
@@ -304,6 +304,10 @@ func metricsToMap(m Metrics) map[string]any {
 		"loss_node_3":    m.LossNode3,
 		"loss_node_4":    m.LossNode4,
 	}
+	if m.Probes != nil {
+		result["probes"] = m.Probes
+	}
+	return result
 }
 
 func diskIOStatsFromCounters(prev, current DiskIOCounters, elapsedSeconds float64) DiskIOStats {
