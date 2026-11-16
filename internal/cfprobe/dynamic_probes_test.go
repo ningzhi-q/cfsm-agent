@@ -65,6 +65,81 @@ func TestDynamicConfigValidationAndAutomaticFamilies(t *testing.T) {
 	}
 }
 
+func TestDynamicSelectionUsesDiscoveredPublicAddresses(t *testing.T) {
+	for _, tt := range []struct {
+		name, ipv4, ipv6, commonFamily string
+		count                          int
+	}{
+		{"ipv4 only", "198.51.100.10", "", "ipv4", 12},
+		{"ipv6 only", "", "2001:db8::10", "ipv6", 12},
+		{"dual stack", "198.51.100.10", "2001:db8::10", "auto", 18},
+		{"unavailable", "", "", "", 0},
+		{"wrong family", "2001:db8::10", "198.51.100.10", "", 0},
+		{"invalid addresses", "invalid", "invalid", "", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			targets := selectDynamicProbes(testDynamicCatalog(), DynamicProbeSelection{Mode: "auto"}, tt.ipv4, tt.ipv6)
+			if len(targets) != tt.count {
+				t.Fatalf("selected %d targets, want %d", len(targets), tt.count)
+			}
+			for _, target := range targets {
+				if target.ID[:4] == "p_2_" && target.Family != tt.commonFamily {
+					t.Fatalf("common target family %s, want %s", target.Family, tt.commonFamily)
+				}
+			}
+		})
+	}
+}
+
+func TestDynamicWorkerReportsWithDiscoveredAddress(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	catalog := DynamicProbeCatalog{Enabled: true, Groups: []DynamicProbeGroup{{
+		ID: "g_ipv4", Name: "IPv4", Family: "ipv4", Targets: []DynamicProbeTarget{{
+			ID: "p_local", Name: "local test", Address: listener.Addr().String(), Enabled: true,
+		}},
+	}}}
+	raw, _ := json.Marshal(catalog)
+	cfg := Config{ProbeCatalog: string(raw), PingMode: "tcp"}
+	a := &Agent{cfg: cfg, probes: ProbeSnapshot{IPv4: "198.51.100.10"}, log: newLogger(false)}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); a.dynamicProbeWorker(ctx) }()
+	defer func() { cancel(); <-done }()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatal("no dynamic result from discovered IPv4 address")
+		case <-poll.C:
+			probes := a.dynamicProbeSnapshot(cfg)
+			if sample, ok := probes["p_local"]; ok {
+				if sample.Timestamp <= 0 || sample.Latency == nil || sample.Loss != 0 {
+					t.Fatalf("invalid live TCP result: %+v", sample)
+				}
+				if len(a.metricsForReport(Metrics{Probes: probes}, time.Now())["probes"].(map[string]DynamicProbeSample)) != 1 {
+					t.Fatal("dynamic result missing from report")
+				}
+				return
+			}
+		}
+	}
+}
+
 func TestDynamicCycleLimitsConcurrencyAndPublishesBeforeBatchCompletes(t *testing.T) {
 	targets := selectDynamicProbes(testDynamicCatalog(), DynamicProbeSelection{Mode: "auto"}, "1", "1")
 	var running, maxRunning, published atomic.Int32
