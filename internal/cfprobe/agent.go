@@ -36,19 +36,21 @@ type Agent struct {
 	// 上面那次“带 id 的补报”完成后才启动 WSS，保证补报一定走 POST（md5 比对 + 入库）。
 	discoverySyncPending atomic.Bool
 
-	mu         sync.RWMutex
-	probes     ProbeSnapshot
-	basic      BasicStats
-	basicAt    time.Time
-	fullAt     time.Time
-	prevNet    NetBytes
-	prevTime   time.Time
-	prevDisk   DiskIOCounters
-	prevDiskAt time.Time
-	diskIO     DiskIOStats
-	monthlyRX  uint64
-	monthlyTX  uint64
-	clock      calibratedClock
+	mu                 sync.RWMutex
+	probes             ProbeSnapshot
+	dynamicProbes      map[string]DynamicProbeSample
+	dynamicProbeConfig string
+	basic              BasicStats
+	basicAt            time.Time
+	fullAt             time.Time
+	prevNet            NetBytes
+	prevTime           time.Time
+	prevDisk           DiskIOCounters
+	prevDiskAt         time.Time
+	diskIO             DiskIOStats
+	monthlyRX          uint64
+	monthlyTX          uint64
+	clock              calibratedClock
 
 	samples                  []metricSample
 	lastSample               time.Time
@@ -64,9 +66,9 @@ type Agent struct {
 	updateMu         sync.Mutex
 	// configWriteMu 串行化配置文件写入：动态配置下发与 UA 下发是两条独立通道，
 	// 并发写会把对方的字段覆盖回旧值。
-	configWriteMu    sync.Mutex
-	reporter         *reportTransport
-	reportMu         sync.Mutex
+	configWriteMu sync.Mutex
+	reporter      *reportTransport
+	reportMu      sync.Mutex
 	// reportFailures 是 WSS 与 POST 共用的连续失败计数：握手 401/403、WSS error 帧、
 	// POST 4xx/5xx、WS close 1008 都计入，任意一次成功（POST 2xx、非实时提示 ack、
 	// 或 WSS 握手通过）清零。
@@ -251,6 +253,7 @@ func Run(instance, configFile string, debug bool, version string) error {
 		cfg.ServerID, cfg.WorkerURL, cfg.ReportInterval, cfg.CollectInterval, cfg.ResetDay, cfg.ConnectionMode, cfg.PingMode, firstNonEmpty(cfg.Interface, "auto"), cfg.AutoUpdate)
 
 	go a.networkWorker(ctx)
+	go a.dynamicProbeWorker(ctx)
 	if a.usesWSS() {
 		a.reporter.start(ctx)
 	} else if cfg.ServerID != "" {
@@ -818,6 +821,7 @@ func (a *Agent) buildMetrics(cfg Config, cpu string, netNow NetBytes, rxSpeed, t
 	a.mu.RUnlock()
 	b := a.basic
 	return Metrics{
+		Probes:       a.dynamicProbeSnapshot(cfg),
 		CPU:          cpu,
 		RAMTotal:     uintString(b.MemTotalMB),
 		RAMUsed:      uintString(b.MemUsedMB),
@@ -1025,7 +1029,7 @@ func (a *Agent) postReportBody(cfg Config, body []byte, sampleCount int, fallbac
 	}
 	headerReceived := time.Now()
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxRemoteConfigBytes+1))
 	respHeaders := resp.Header
 	reportHTTPCode := resp.StatusCode
 	a.handleTimedReportResponse(reportHTTPCode, respBody, respHeaders, started, headerReceived)
@@ -1036,9 +1040,21 @@ func (a *Agent) samplesForReport() []map[string]any {
 	samples := make([]map[string]any, 0, len(a.samples))
 	for _, sample := range a.samples {
 		timestamp, _ := a.clock.timestamp(sample.at)
+		metrics := make(map[string]any, len(sample.metrics))
+		for key, value := range sample.metrics {
+			metrics[key] = value
+		}
+		if raw, ok := metrics["probes"].(map[string]DynamicProbeSample); ok {
+			probes := make(map[string]DynamicProbeSample, len(raw))
+			for id, probe := range raw {
+				probe.Timestamp = a.clock.correctLocalTimestamp(probe.Timestamp, sample.at)
+				probes[id] = probe
+			}
+			metrics["probes"] = probes
+		}
 		samples = append(samples, map[string]any{
 			"ts":      timestamp,
-			"metrics": sample.metrics,
+			"metrics": metrics,
 		})
 	}
 	return samples
@@ -1046,6 +1062,14 @@ func (a *Agent) samplesForReport() []map[string]any {
 
 func (a *Agent) metricsForReport(m Metrics, reportAt time.Time) map[string]any {
 	metrics := metricsToMap(m)
+	if m.Probes != nil {
+		probes := make(map[string]DynamicProbeSample, len(m.Probes))
+		for id, sample := range m.Probes {
+			sample.Timestamp = a.clock.correctLocalTimestamp(sample.Timestamp, reportAt)
+			probes[id] = sample
+		}
+		metrics["probes"] = probes
+	}
 	bootTime, err := strconv.ParseInt(m.BootTime, 10, 64)
 	if err == nil && bootTime > 0 {
 		metrics["boot_time"] = strconv.FormatInt(a.clock.correctLocalTimestamp(bootTime, reportAt), 10)
@@ -1262,7 +1286,7 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 	if len(body) == 0 {
 		return errors.New("empty body")
 	}
-	if len(body) > 1024 {
+	if len(body) > maxRemoteConfigBytes {
 		return errors.New("response too large")
 	}
 	raw := strings.TrimSpace(string(body))
@@ -1277,6 +1301,8 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 		return err
 	}
 	allowed := map[string]bool{
+		"probe_catalog":       true,
+		"probe_selection":     true,
 		"collect_interval":    true,
 		"report_interval":     true,
 		"wss_report_interval": true,
@@ -1348,7 +1374,7 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 	if reset < 0 || reset > 31 {
 		return fmt.Errorf("invalid reset_day %d", reset)
 	}
-	if values.Get("schema_version") != configSchemaVersion {
+	if schema := parseIntDefault(values.Get("schema_version"), 0); schema < 3 || schema > 8 {
 		return fmt.Errorf("invalid schema_version %s", values.Get("schema_version"))
 	}
 	if report < collect {
@@ -1369,6 +1395,9 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 	effectiveCollect := collect
 	if connectionMode == connectionModeAuto && (collect == 0 || collect > wssReport) {
 		effectiveCollect = wssReport
+	}
+	if _, _, err := parseDynamicProbes(values.Get("probe_catalog"), values.Get("probe_selection")); err != nil {
+		return err
 	}
 	shouldApply := false
 	if hasRemoteMD5 {
@@ -1392,6 +1421,8 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 		nextCfg.Interface = iface
 		nextCfg.ConnectionMode = connectionMode
 		nextCfg.PingMode = pingMode
+		nextCfg.ProbeCatalog = values.Get("probe_catalog")
+		nextCfg.ProbeSelection = values.Get("probe_selection")
 		if hasRemoteMD5 {
 			nextCfg.ConfigMD5 = newMD5
 		}
@@ -1461,7 +1492,7 @@ func (a *Agent) syncReportTransport() {
 }
 
 func remoteConfigDiffers(cfg Config, values url.Values, collect, report, reset int, iface, connectionMode, pingMode string) bool {
-	return cfg.CollectInterval != collect ||
+	return cfg.ProbeCatalog != values.Get("probe_catalog") || cfg.ProbeSelection != values.Get("probe_selection") || cfg.CollectInterval != collect ||
 		cfg.ReportInterval != report ||
 		cfg.ResetDay != reset ||
 		cfg.CTNode != values.Get("custom_ct") ||

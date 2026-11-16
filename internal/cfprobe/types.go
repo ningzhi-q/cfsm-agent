@@ -7,7 +7,7 @@ const (
 	legacyAgentVersion          = "1.0.0"
 	maxTrafficCorrectionGB      = 1000000
 	autoUpdateDelay             = 60 * time.Second
-	configSchemaVersion         = "7"
+	configSchemaVersion         = "8"
 	defaultReportIntervalSec    = 60
 	defaultWSSReportIntervalSec = 2
 	// 单个上报窗口的硬上限：正常 60s/2s 窗口约 30 条，只有 REPORT_INTERVAL 远大于
@@ -41,12 +41,14 @@ type Config struct {
 	Interface       string
 	ResetDay        int
 	ConnectionMode  string
+	ProbeCatalog    string
+	ProbeSelection  string
 	PingMode        string
 	// UA 是上报请求的自定义 User-Agent，由服务端通过独立通道下发（不参与 ConfigMD5 比对），
 	// 本地安装参数 -ua 只作为初值。
-	UA         string
-	AutoUpdate bool
-	UpdateProxy     string
+	UA          string
+	AutoUpdate  bool
+	UpdateProxy string
 	// ConfigMD5 mirrors the worker dynamic config version; local fields like
 	// AutoUpdate and UpdateProxy are intentionally outside that comparison.
 	ConfigMD5 string
@@ -108,6 +110,7 @@ type ProbeSnapshot struct {
 }
 
 type Metrics struct {
+	Probes       map[string]DynamicProbeSample
 	CPU          string
 	RAMTotal     string
 	RAMUsed      string
