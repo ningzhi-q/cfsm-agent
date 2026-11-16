@@ -127,13 +127,13 @@ func TestParseUpgradeApplyOptionsInstance(t *testing.T) {
 	}
 }
 
-func TestParseInstallOptionsAutoUpdateDefaultOff(t *testing.T) {
+func TestParseInstallOptionsAutoUpdateDefaultOn(t *testing.T) {
 	got, err := parseInstallOptions(nil)
 	if err != nil {
 		t.Fatalf("parseInstallOptions(nil) error = %v", err)
 	}
-	if got.AutoUpdate {
-		t.Fatal("AutoUpdate = true, want false")
+	if !got.AutoUpdate {
+		t.Fatal("AutoUpdate = false, want true")
 	}
 }
 
@@ -213,5 +213,12 @@ func TestParseInstallOptionsTracksExplicitFlags(t *testing.T) {
 	}
 	if got.Explicit["reset_day"] || got.Explicit["interface"] {
 		t.Fatalf("unexpected explicit flags: %v", got.Explicit)
+	}
+}
+
+func TestParseInstallOptionsAutoUpdateExplicitOff(t *testing.T) {
+	got, err := parseInstallOptions([]string{"-auto_update=0"})
+	if err != nil || got.AutoUpdate {
+		t.Fatalf("explicit off: %+v, %v", got, err)
 	}
 }

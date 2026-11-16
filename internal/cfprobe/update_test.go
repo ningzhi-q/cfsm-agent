@@ -217,10 +217,35 @@ func TestUpdateAssetDownloadURLAppliesProxy(t *testing.T) {
 	}
 }
 
-func TestRemoteUpdateFlagIsNoop(t *testing.T) {
-	a := Agent{cfg: Config{AutoUpdate: true}, version: "1.0.0"}
-	if err := a.applyRemoteConfig([]byte("update=1"), http.Header{}); err != nil {
-		t.Fatalf("applyRemoteConfig(update=1) error = %v", err)
+func TestRemoteUpdateFlagPersistsAndWakesWorker(t *testing.T) {
+	a := Agent{cfg: Config{AutoUpdate: false}, paths: Paths{ConfigFile: filepath.Join(t.TempDir(), "config.conf")}, autoUpdateWake: make(chan struct{}, 1)}
+	for _, flag := range []string{"1", "0", "1"} {
+		if err := a.applyRemoteConfig([]byte("update="+flag), http.Header{}); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := readConfig(a.paths.ConfigFile)
+		if err != nil || cfg.AutoUpdate != (flag == "1") || a.configSnapshot().AutoUpdate != cfg.AutoUpdate {
+			t.Fatalf("flag=%s config=%+v err=%v", flag, cfg, err)
+		}
+		if flag == "1" {
+			select {
+			case <-a.autoUpdateWake:
+			default:
+				t.Fatal("worker was not woken")
+			}
+		}
+	}
+}
+
+func TestSnapshotMigratesToStableAndStableIgnoresSnapshot(t *testing.T) {
+	asset := "cf-probe-linux-amd64"
+	releases := []githubRelease{testGitHubRelease("Snapshot-2611160732", false, true, time.Now(), asset), testGitHubRelease("v1.2.0", false, false, time.Now(), asset)}
+	candidate, ok, err := selectAgentUpdate(releases, "Snapshot-2611160732", asset)
+	if err != nil || !ok || candidate.TagName != "v1.2.0" {
+		t.Fatalf("migration: %+v %v %v", candidate, ok, err)
+	}
+	if _, ok, err := selectAgentUpdate(releases, "v1.2.0", asset); err != nil || ok {
+		t.Fatalf("stable moved to snapshot: %v %v", ok, err)
 	}
 }
 

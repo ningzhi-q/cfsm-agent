@@ -24,6 +24,7 @@ func defaultConfig() Config {
 		ConnectionMode:  connectionModeAuto,
 		PingMode:        pingModeTCP,
 		UA:              defaultUserAgent,
+		AutoUpdate:      true,
 		ConfigMD5:       "none",
 	}
 }
@@ -180,7 +181,7 @@ func readConfig(path string) (Config, error) {
 	cfg.ConnectionMode, _ = normalizeConnectionMode(values["CONNECTION_MODE"])
 	cfg.PingMode, _ = normalizePingMode(values["PING_MODE"])
 	cfg.UA = normalizeUserAgentValue(values["UA"])
-	cfg.AutoUpdate = values["AUTO_UPDATE"] == "1"
+	cfg.AutoUpdate = values["AUTO_UPDATE"] != "0"
 	cfg.UpdateProxy = strings.TrimSpace(values["UPDATE_PROXY"])
 	cfg.ConfigMD5 = values["CONFIG_MD5"]
 	if cfg.ConfigMD5 == "" {

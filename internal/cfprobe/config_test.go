@@ -73,6 +73,9 @@ func TestReadConfigDefaultsConnectionModeAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readConfig returned error: %v", err)
 	}
+	if !got.AutoUpdate {
+		t.Fatal("missing AUTO_UPDATE must default on")
+	}
 	if got.ConnectionMode != connectionModeAuto {
 		t.Fatalf("ConnectionMode = %q, want %q", got.ConnectionMode, connectionModeAuto)
 	}
