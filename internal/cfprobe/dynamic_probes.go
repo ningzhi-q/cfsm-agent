@@ -118,6 +118,11 @@ func parseDynamicProbes(catalogRaw, selectionRaw string) (DynamicProbeCatalog, D
 }
 
 func selectDynamicProbes(catalog DynamicProbeCatalog, selection DynamicProbeSelection, ipv4, ipv6 string) []DynamicProbeTarget {
+	// networkWorker stores the discovered addresses. The public backend turns them
+	// into "1"/"0" flags, so selection must also accept the internal IP values.
+	v4IP, v6IP := net.ParseIP(ipv4), net.ParseIP(ipv6)
+	hasIPv4 := ipv4 == "1" || (v4IP != nil && v4IP.To4() != nil)
+	hasIPv6 := ipv6 == "1" || (v6IP != nil && v6IP.To4() == nil)
 	result := []DynamicProbeTarget{}
 	selected := map[string]bool{}
 	for _, id := range selection.Targets {
@@ -127,14 +132,14 @@ func selectDynamicProbes(catalog DynamicProbeCatalog, selection DynamicProbeSele
 		return result
 	}
 	for _, group := range catalog.Groups {
-		auto := (group.Family == "ipv4" && ipv4 == "1") || (group.Family == "ipv6" && ipv6 == "1") || (group.Family == "auto" && (ipv4 == "1" || ipv6 == "1"))
+		auto := (group.Family == "ipv4" && hasIPv4) || (group.Family == "ipv6" && hasIPv6) || (group.Family == "auto" && (hasIPv4 || hasIPv6))
 		for _, target := range group.Targets {
 			if target.Enabled && ((selection.Mode == "auto" && auto) || (selection.Mode == "manual" && selected[target.ID])) {
 				target.Family = group.Family
 				if target.Family == "auto" {
-					if ipv4 == "1" && ipv6 != "1" {
+					if hasIPv4 && !hasIPv6 {
 						target.Family = "ipv4"
-					} else if ipv6 == "1" && ipv4 != "1" {
+					} else if hasIPv6 && !hasIPv4 {
 						target.Family = "ipv6"
 					}
 				}
